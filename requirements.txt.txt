@@ -1,9 +1,10 @@
-yfinance
+flask
 pandas
 numpy
 ta
+requests
+python-binance
+yfinance
 xgboost
 scikit-learn
 joblib
-requests
-python-binance
