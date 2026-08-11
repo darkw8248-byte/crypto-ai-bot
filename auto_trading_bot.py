@@ -147,7 +147,8 @@ while True:
                         side=side_action,
                         type='MARKET',
                         quantity=0.002
-                    )# 🏦 Order Execution on Binance Testnet (Order + TP/SL)
+                    )
+                    # 🏦 Order Execution on Binance Testnet (Order + TP/SL)
 execution_status = "⚠️ Order Skipped"
 try:
     # ১. মূল মার্কেট অর্ডার এক্সিকিউট
