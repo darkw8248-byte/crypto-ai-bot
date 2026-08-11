@@ -1,0 +1,9 @@
+yfinance
+pandas
+numpy
+ta
+xgboost
+scikit-learn
+joblib
+requests
+python-binance
