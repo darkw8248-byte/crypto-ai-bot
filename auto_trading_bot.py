@@ -8,30 +8,26 @@ from flask import Flask
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
-# 🌐 ১. Render-কে ২৪ ঘণ্টা সচল রাখার জন্য Flask সার্ভার
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Professional AI Trading Bot is LIVE 24/7!", 200
 
-# 🔑 ২. এনভায়রনমেন্ট ভেরিয়েবল (API Keys)
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 SYMBOL = "BTCUSDT"
-TRADE_QUANTITY = 0.002  # বিটকয়েনের লট সাইজ (আপনার ব্যালেন্স অনুযায়ী পরিবর্তন করতে পারেন)
+TRADE_QUANTITY = 0.002  
 
-# 🚀 ৩. বাইন্যান্স ক্লায়েন্ট সেটআপ (Testnet)
 try:
     client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
     client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
 except Exception as e:
     print(f"❌ Client Setup Error: {e}")
 
-# 📲 ৪. টেলিগ্রাম নোটিফিকেশন সিস্টেম
 def send_telegram_msg(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -41,10 +37,8 @@ def send_telegram_msg(message):
         except Exception as e:
             print(f"❌ Telegram Error: {e}")
 
-# 📊 ৫. মার্কেট ডাটা ফেচিং
 def get_market_data():
     try:
-        # সরাসরি বাইন্যান্স ফিউচার্স থেকে ডাটা নেওয়া
         klines = client.futures_klines(symbol=SYMBOL, interval='15m', limit=250)
         df = pd.DataFrame(klines, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
@@ -57,7 +51,6 @@ def get_market_data():
         print(f"❌ Market Data Error: {e}")
         return None
 
-# 🧠 ৬. প্রফেশনাল ট্রেডিং স্ট্র্যাটেজি (Indicators Setup)
 def analyze_market_signals(df):
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     df['macd'] = ta.trend.macd_diff(df['close'])
@@ -71,31 +64,27 @@ def analyze_market_signals(df):
     current_price = latest['close']
     side_action = None
 
-    # Buy / Long Condition
     if (current_price > latest['ema200']) and (latest['rsi'] < 45) and (latest['macd'] > 0 and prev['macd'] <= 0):
         side_action = "BUY"
-    # Sell / Short Condition
     elif (current_price < latest['ema200']) and (latest['rsi'] > 55) and (latest['macd'] < 0 and prev['macd'] >= 0):
         side_action = "SELL"
 
     return side_action, current_price
 
-# ⚙️ ৭. বাইন্যান্স এক্সিকিউশন ও TP/SL প্লেসমেন্ট
 def execute_trade(side_action, current_price):
     try:
-        # 🎯 TP এবং SL হিসাব (Risk to Reward Ratio 1:1.5)
+        # 🎯 ফিক্স: দশমিকের পর ১ ঘর (Tick Size 0.1) রাখা হয়েছে
         if side_action == "BUY":
-            take_profit = round(current_price * 1.015, 2)
-            stop_loss = round(current_price * 0.990, 2)
+            take_profit = round(current_price * 1.015, 1)
+            stop_loss = round(current_price * 0.990, 1)
             exit_side = "SELL"
         else:
-            take_profit = round(current_price * 0.985, 2)
-            stop_loss = round(current_price * 1.010, 2)
+            take_profit = round(current_price * 0.985, 1)
+            stop_loss = round(current_price * 1.010, 1)
             exit_side = "BUY"
 
         print(f"⏳ Executing {side_action} Order...")
 
-        # ১. মেইন পজিশন ওপেন করা (Market Order)
         client.futures_create_order(
             symbol=SYMBOL,
             side=side_action,
@@ -103,7 +92,6 @@ def execute_trade(side_action, current_price):
             quantity=TRADE_QUANTITY
         )
 
-        # ২. টেক প্রফিট (TP) সেট করা
         client.futures_create_order(
             symbol=SYMBOL,
             side=exit_side,
@@ -112,7 +100,6 @@ def execute_trade(side_action, current_price):
             closePosition=True
         )
 
-        # ৩. স্টপ লস (SL) সেট করা
         client.futures_create_order(
             symbol=SYMBOL,
             side=exit_side,
@@ -121,14 +108,13 @@ def execute_trade(side_action, current_price):
             closePosition=True
         )
 
-        # ৪. সফলভাবে ট্রেড প্লেস হলে টেলিগ্রামে মেসেজ
         msg = f"🚀 *BINANCE ORDER EXECUTED*\n\n" \
               f"🔹 *Symbol:* {SYMBOL}\n" \
               f"🔹 *Type:* {side_action}\n" \
               f"🔹 *Entry Price:* ${current_price}\n" \
               f"🎯 *Take Profit:* ${take_profit}\n" \
               f"🛑 *Stop Loss:* ${stop_loss}\n\n" \
-              f"✅ *Status:* Position & TP/SL Set Automatically!"
+              f"✅ *Status:* Position & TP/SL Set Successfully!"
         send_telegram_msg(msg)
         print("✅ Trade and TP/SL Executed Successfully!")
 
@@ -139,7 +125,6 @@ def execute_trade(side_action, current_price):
     except Exception as e:
         print(f"❌ General Error during execution: {e}")
 
-# 🔄 ৮. ব্যাকগ্রাউন্ড রানিং লুপ
 def trading_loop():
     print("🤖 Professional Auto-Trading Engine Active...")
     while True:
@@ -156,10 +141,8 @@ def trading_loop():
         except Exception as e:
             print(f"❌ Main Loop Error: {e}")
         
-        # পরবর্তী সিগন্যাল চেকের জন্য ১৫ মিনিট অপেক্ষা
         time.sleep(900)
 
-# 🏁 ৯. অ্যাপ্লিকেশন স্টার্টআপ
 if __name__ == "__main__":
     t = threading.Thread(target=trading_loop)
     t.daemon = True
