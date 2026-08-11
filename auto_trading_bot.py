@@ -147,7 +147,41 @@ while True:
                         side=side_action,
                         type='MARKET',
                         quantity=0.002
-                    )
+                    )# 🏦 Order Execution on Binance Testnet (Order + TP/SL)
+execution_status = "⚠️ Order Skipped"
+try:
+    # ১. মূল মার্কেট অর্ডার এক্সিকিউট
+    order = client.futures_create_order(
+        symbol=SYMBOL,
+        side=side_action,
+        type='MARKET',
+        quantity=0.01
+    )
+    
+    # বিপরীতে অর্ডার অ্যাকশন (BUY থাকলে SELL, SELL থাকলে BUY)
+    exit_side = "SELL" if side_action == "BUY" else "BUY"
+    
+    # ২. অটোমেটিক টেক প্রফিট (Take Profit) সেট করা
+    client.futures_create_order(
+        symbol=SYMBOL,
+        side=exit_side,
+        type='TAKE_PROFIT_MARKET',
+        stopPrice=take_profit,
+        closePosition=True
+    )
+
+    # ৩. অটোমেটিক স্টপ লস (Stop Loss) সেট করা
+    client.futures_create_order(
+        symbol=SYMBOL,
+        side=exit_side,
+        type='STOP_MARKET',
+        stopPrice=stop_loss,
+        closePosition=True
+    )
+    
+    execution_status = "✅ Market Order with TP/SL Placed"
+except Exception as order_err:
+    execution_status = f"❌ Order Failed ({str(order_err)[:30]})"
                     execution_status = "✅ Order Placed Successfully"
                 except Exception as order_err:
                     execution_status = f"❌ Order Failed ({str(order_err)[:30]})"
