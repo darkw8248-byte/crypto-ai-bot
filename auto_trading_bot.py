@@ -6,10 +6,10 @@ import ta
 from binance.client import Client
 
 # 🔑 ১. পরিবেশ পরিবর্তনশীল (Environment Variables)
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+BINANCE_API_KEY = os.environ.get("7jF0gZgl9CIn6kmuDtcCoMZmwtvxjpc79Geso0GCEMJsoBRGJcR9Rfgfr2IW80as")
+BINANCE_SECRET_KEY = os.environ.get("uczEZhc7RpzGp7cIarmxbVyGlVUnrzNaBXsWqVaaoNos3shjDTSaHjGrQRTzHni7")
+TELEGRAM_BOT_TOKEN = os.environ.get("8356755161:AAHtX19JNmHJ8FLFWKfWJoG2-0HNVTDoYCM")
+TELEGRAM_CHAT_ID = os.environ.get("5430604708")
 
 SYMBOL = "BTCUSDT"
 
