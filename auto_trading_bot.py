@@ -7,12 +7,10 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "6-Factor AI Trading Bot is Running Correctly!", 200
+    return "Strict 100% 6-Condition AI Bot is Running!", 200
 
-# CONFIGURATION
 SYMBOL = "BTCUSDT"
 TRADE_QUANTITY = 0.002
-MIN_SCORE = 75.0  # 🎯 ৭৫% স্কোর না পাওয়া পর্যন্ত ট্রেড নেবে না!
 
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
@@ -23,7 +21,7 @@ try:
     client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
     client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
 except Exception as e:
-    print(f"❌ Client Error: {e}")
+    print(f"❌ API Setup Error: {e}")
 
 def send_telegram_msg(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -41,8 +39,7 @@ def check_active_position():
             if float(pos['positionAmt']) != 0:
                 return True
         return False
-    except Exception as e:
-        print(f"❌ Position Check Error: {e}")
+    except:
         return True
 
 def get_data():
@@ -52,12 +49,11 @@ def get_data():
         for col in ['open', 'high', 'low', 'close', 'vol']: 
             df[col] = df[col].astype(float)
         return df
-    except Exception as e:
-        print(f"❌ Data Fetch Error: {e}")
+    except:
         return None
 
-# 🧠 ৬টি প্রফেশনাল শর্ত যাচাইকরণ
-def calculate_score(df):
+# 🧠 ৬টির মধ্যে ৬টি শর্তই মিলতে হবে
+def analyze_strict_6_conditions(df):
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     macd = ta.trend.MACD(df['close'])
     df['macd'] = macd.macd_diff()
@@ -70,53 +66,36 @@ def calculate_score(df):
     df.dropna(inplace=True)
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    
-    bullish_score = 0
-    bearish_score = 0
-    
-    # ১. Trend EMA50 (১৫ পয়েন্ট)
-    if latest['close'] > latest['ema50']: bullish_score += 15
-    else: bearish_score += 15
-
-    # ২. Trend EMA200 (১৫ পয়েন্ট)
-    if latest['close'] > latest['ema200']: bullish_score += 15
-    else: bearish_score += 15
-
-    # ৩. Momentum RSI (২০ পয়েন্ট)
-    if latest['rsi'] < 42: bullish_score += 20
-    elif latest['rsi'] > 58: bearish_score += 20
-
-    # ৪. MACD Signal (২০ পয়েন্ট)
-    if latest['macd'] > 0 and prev['macd'] <= 0: bullish_score += 20
-    elif latest['macd'] < 0 and prev['macd'] >= 0: bearish_score += 20
-
-    # ৫. Bollinger Band (১৫ পয়েন্ট)
-    if latest['close'] <= latest['bb_low']: bullish_score += 15
-    elif latest['close'] >= latest['bb_high']: bearish_score += 15
-
-    # ৬. Volume Support (১৫ পয়েন্ট)
     vol_mean = df['vol'].rolling(20).mean().iloc[-1]
-    if latest['vol'] > vol_mean:
-        bullish_score += 15
-        bearish_score += 15
+    
+    # BUY-এর জন্য ৬টি শর্ত
+    c1_buy = latest['close'] > latest['ema50']
+    c2_buy = latest['close'] > latest['ema200']
+    c3_buy = latest['rsi'] < 40
+    c4_buy = latest['macd'] > 0 and prev['macd'] <= 0
+    c5_buy = latest['close'] <= latest['bb_low']
+    c6_buy = latest['vol'] > vol_mean
 
-    side_action = None
-    final_score = 0
+    # SELL-এর জন্য ৬টি শর্ত
+    c1_sell = latest['close'] < latest['ema50']
+    c2_sell = latest['close'] < latest['ema200']
+    c3_sell = latest['rsi'] > 60
+    c4_sell = latest['macd'] < 0 and prev['macd'] >= 0
+    c5_sell = latest['close'] >= latest['bb_high']
+    c6_sell = latest['vol'] > vol_mean
 
-    if bullish_score >= MIN_SCORE:
-        side_action = "BUY"
-        final_score = bullish_score
-    elif bearish_score >= MIN_SCORE:
-        side_action = "SELL"
-        final_score = bearish_score
+    side = None
+    if c1_buy and c2_buy and c3_buy and c4_buy and c5_buy and c6_buy:
+        side = "BUY"
+    elif c1_sell and c2_sell and c3_sell and c4_sell and c5_sell and c6_sell:
+        side = "SELL"
 
-    print(f"📊 Market Price: ${latest['close']} | Bullish: {bullish_score}% | Bearish: {bearish_score}%")
-    return side_action, final_score, latest['close']
+    return side, latest['close']
 
-def execute_trade(side, price, score):
+def execute_trade(side, price):
     if side == 'BUY':
-        tp = round(price * 1.015, 1) # ১.৫% টেক প্রফিট
-        sl = round(price * 0.992, 1) # ০.৮% স্টপ লস
+        tp = round(price * 1.015, 1)
+        sl = round(price * 0.992, 1)
         exit_side = 'SELL'
     else:
         tp = round(price * 0.985, 1)
@@ -124,60 +103,37 @@ def execute_trade(side, price, score):
         exit_side = 'BUY'
 
     try:
-        print(f"⚡ Executing High-Confidence {side} Order on Binance...")
-        
-        # ১. মেইন অর্ডার
         client.futures_create_order(symbol=SYMBOL, side=side, type='MARKET', quantity=TRADE_QUANTITY)
-        
-        # ২. টেক প্রফিট
         client.futures_create_order(symbol=SYMBOL, side=exit_side, type='TAKE_PROFIT_MARKET', stopPrice=tp, closePosition=True)
-        
-        # ৩. স্টপ লস
         client.futures_create_order(symbol=SYMBOL, side=exit_side, type='STOP_MARKET', stopPrice=sl, closePosition=True)
 
-        msg = f"🚀 *HIGH CONFIDENCE TRADE EXECUTED*\n\n" \
-              f"🔹 *Signal:* {side}\n" \
-              f"🎯 *Score:* {score}/100\n" \
-              f"💰 *Entry Price:* ${price}\n" \
-              f"🚀 *Take Profit:* ${tp}\n" \
-              f"🛑 *Stop Loss:* ${sl}\n\n" \
-              f"✅ *Binance Status:* Order & TP/SL Placed!"
+        msg = f"🔥 *100% STRICT SIGNAL EXECUTED*\n\n" \
+              f"🔹 *Action:* {side}\n" \
+              f"💰 *Price:* ${price}\n" \
+              f"🎯 *TP:* ${tp}\n" \
+              f"🛑 *SL:* ${sl}\n\n" \
+              f"✅ *All 6 Indicators Confirmed!*"
         send_telegram_msg(msg)
-        print("✅ Trade and TP/SL Orders Placed Successfully!")
-
-    except BinanceAPIException as e:
-        error_msg = f"❌ *Binance Execution Error:* `{e.message}`"
-        print(error_msg)
-        send_telegram_msg(error_msg)
     except Exception as e:
-        print(f"❌ Order Error: {e}")
+        print(f"❌ Execution Error: {e}")
 
 def trading_loop():
-    print("🤖 Fixed 6-Factor AI Trading Bot Running...")
+    print("🤖 Strict 6-Condition Trading Engine Active...")
     while True:
         try:
-            if check_active_position():
-                print("⏳ Trade active on Binance. Waiting for TP/SL to hit...")
-            else:
+            if not check_active_position():
                 df = get_data()
                 if df is not None:
-                    side_action, score, price = calculate_score(df)
-                    
-                    # 🔴 মূল ফিক্স: কেবল স্কোর ৭৫ বা তার বেশি হলে এবং সাইড থাকলে ট্রেড নেবে!
-                    if side_action and score >= MIN_SCORE:
-                        execute_trade(side_action, price, score)
-                        time.sleep(300) # ট্রেড নেওয়ার পর ৫ মিনিট পজ
-                    else:
-                        print(f"⏸️ Waiting for strong signal (Score below {MIN_SCORE}%).")
+                    side, price = analyze_strict_6_conditions(df)
+                    if side:
+                        execute_trade(side, price)
+                        time.sleep(300)
         except Exception as e:
             print(f"❌ Loop Error: {e}")
-        
         time.sleep(30)
 
 if __name__ == "__main__":
     t = threading.Thread(target=trading_loop)
     t.daemon = True
     t.start()
-    
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
