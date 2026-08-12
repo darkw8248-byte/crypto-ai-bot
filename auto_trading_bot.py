@@ -44,7 +44,7 @@ def check_active_position():
 
 def get_data():
     try:
-        klines = client.futures_klines(symbol=SYMBOL, interval='5m', limit=100)
+        klines = client.futures_klines(symbol=SYMBOL, interval='15m', limit=100)
         df = pd.DataFrame(klines, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'ct', 'qav', 't', 'tbav', 'tbqv', 'i'])
         for col in ['open', 'high', 'low', 'close', 'vol']: 
             df[col] = df[col].astype(float)
@@ -119,6 +119,7 @@ def execute_trade(side, price):
 
 def trading_loop():
     print("🤖 Strict 6-Condition Trading Engine Active...")
+    send_telegram_msg("🚀 Strict 6-Condition Bot is Active and Scanning!")
     while True:
         try:
             if not check_active_position():
