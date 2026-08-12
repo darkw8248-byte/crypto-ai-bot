@@ -7,22 +7,24 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "6-Factor Trading Engine with Telegram Alerts is LIVE!", 200
+    return "6-Factor AI Trading Bot is Running Correctly!", 200
 
 # CONFIGURATION
 SYMBOL = "BTCUSDT"
 TRADE_QUANTITY = 0.002
-MIN_SCORE = 75  # প্রফেশনাল থ্রেশহোল্ড ৭৫%
+MIN_SCORE = 75.0  # 🎯 ৭৫% স্কোর না পাওয়া পর্যন্ত ট্রেড নেবে না!
 
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
-client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
+try:
+    client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
+    client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
+except Exception as e:
+    print(f"❌ Client Error: {e}")
 
-# 📩 টেলিগ্রাম মেসেজ পাঠানোর ফাংশন
 def send_telegram_msg(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -32,18 +34,30 @@ def send_telegram_msg(message):
         except Exception as e:
             print(f"❌ Telegram Error: {e}")
 
+def check_active_position():
+    try:
+        positions = client.futures_position_information(symbol=SYMBOL)
+        for pos in positions:
+            if float(pos['positionAmt']) != 0:
+                return True
+        return False
+    except Exception as e:
+        print(f"❌ Position Check Error: {e}")
+        return True
+
 def get_data():
     try:
         klines = client.futures_klines(symbol=SYMBOL, interval='5m', limit=100)
         df = pd.DataFrame(klines, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'ct', 'qav', 't', 'tbav', 'tbqv', 'i'])
-        for col in ['open', 'high', 'low', 'close', 'vol']: df[col] = df[col].astype(float)
+        for col in ['open', 'high', 'low', 'close', 'vol']: 
+            df[col] = df[col].astype(float)
         return df
     except Exception as e:
-        print(f"❌ Market Data Error: {e}")
+        print(f"❌ Data Fetch Error: {e}")
         return None
 
+# 🧠 ৬টি প্রফেশনাল শর্ত যাচাইকরণ
 def calculate_score(df):
-    # indicators
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     macd = ta.trend.MACD(df['close'])
     df['macd'] = macd.macd_diff()
@@ -52,64 +66,118 @@ def calculate_score(df):
     bb = ta.volatility.BollingerBands(df['close'])
     df['bb_high'] = bb.bollinger_hband()
     df['bb_low'] = bb.bollinger_lband()
-    df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close']).average_true_range()
     
+    df.dropna(inplace=True)
     latest = df.iloc[-1]
-    score = 0
+    prev = df.iloc[-2]
     
-    # ৬টি প্রফেশনাল শর্ত
-    if latest['close'] > latest['ema50']: score += 15 # ট্রেন্ড
-    if latest['close'] > latest['ema200']: score += 15 # ট্রেন্ড
-    if latest['rsi'] < 45: score += 20 # RSI
-    if latest['macd'] > 0: score += 20 # MACD
-    if latest['close'] < latest['bb_low']: score += 15 # Bollinger
-    if latest['vol'] > df['vol'].rolling(20).mean().iloc[-1]: score += 15 # Volume
+    bullish_score = 0
+    bearish_score = 0
     
-    return score, latest['close'], latest['atr']
+    # ১. Trend EMA50 (১৫ পয়েন্ট)
+    if latest['close'] > latest['ema50']: bullish_score += 15
+    else: bearish_score += 15
 
-def execute_trade(side, price, atr, score):
-    sl = round((price * 0.985) if side == 'BUY' else (price * 1.015), 1)
-    tp = round((price * 1.020) if side == 'BUY' else (price * 0.980), 1)
-    
+    # ২. Trend EMA200 (১৫ পয়েন্ট)
+    if latest['close'] > latest['ema200']: bullish_score += 15
+    else: bearish_score += 15
+
+    # ৩. Momentum RSI (২০ পয়েন্ট)
+    if latest['rsi'] < 42: bullish_score += 20
+    elif latest['rsi'] > 58: bearish_score += 20
+
+    # ৪. MACD Signal (২০ পয়েন্ট)
+    if latest['macd'] > 0 and prev['macd'] <= 0: bullish_score += 20
+    elif latest['macd'] < 0 and prev['macd'] >= 0: bearish_score += 20
+
+    # ৫. Bollinger Band (১৫ পয়েন্ট)
+    if latest['close'] <= latest['bb_low']: bullish_score += 15
+    elif latest['close'] >= latest['bb_high']: bearish_score += 15
+
+    # ৬. Volume Support (১৫ পয়েন্ট)
+    vol_mean = df['vol'].rolling(20).mean().iloc[-1]
+    if latest['vol'] > vol_mean:
+        bullish_score += 15
+        bearish_score += 15
+
+    side_action = None
+    final_score = 0
+
+    if bullish_score >= MIN_SCORE:
+        side_action = "BUY"
+        final_score = bullish_score
+    elif bearish_score >= MIN_SCORE:
+        side_action = "SELL"
+        final_score = bearish_score
+
+    print(f"📊 Market Price: ${latest['close']} | Bullish: {bullish_score}% | Bearish: {bearish_score}%")
+    return side_action, final_score, latest['close']
+
+def execute_trade(side, price, score):
+    if side == 'BUY':
+        tp = round(price * 1.015, 1) # ১.৫% টেক প্রফিট
+        sl = round(price * 0.992, 1) # ০.৮% স্টপ লস
+        exit_side = 'SELL'
+    else:
+        tp = round(price * 0.985, 1)
+        sl = round(price * 1.008, 1)
+        exit_side = 'BUY'
+
     try:
-        # ১. পজিশন ওপেন
+        print(f"⚡ Executing High-Confidence {side} Order on Binance...")
+        
+        # ১. মেইন অর্ডার
         client.futures_create_order(symbol=SYMBOL, side=side, type='MARKET', quantity=TRADE_QUANTITY)
         
-        # ২. টেলিগ্রামে অ্যালার্ট নোটিফিকেশন পাঠানো
-        msg = f"🚀 *HIGH CONFIDENCE SIGNAL DETECTED*\n\n" \
-              f"🔹 *Symbol:* {SYMBOL}\n" \
-              f"🔹 *Action:* {side}\n" \
-              f"📊 *Confidence Score:* {score}/100\n" \
-              f"💰 *Entry Price:* ${price}\n" \
-              f"🎯 *Take Profit:* ${tp}\n" \
-              f"🛑 *Stop Loss:* ${sl}\n\n" \
-              f"✅ *Binance Order:* Placed Successfully!"
+        # ২. টেক প্রফিট
+        client.futures_create_order(symbol=SYMBOL, side=exit_side, type='TAKE_PROFIT_MARKET', stopPrice=tp, closePosition=True)
         
+        # ৩. স্টপ লস
+        client.futures_create_order(symbol=SYMBOL, side=exit_side, type='STOP_MARKET', stopPrice=sl, closePosition=True)
+
+        msg = f"🚀 *HIGH CONFIDENCE TRADE EXECUTED*\n\n" \
+              f"🔹 *Signal:* {side}\n" \
+              f"🎯 *Score:* {score}/100\n" \
+              f"💰 *Entry Price:* ${price}\n" \
+              f"🚀 *Take Profit:* ${tp}\n" \
+              f"🛑 *Stop Loss:* ${sl}\n\n" \
+              f"✅ *Binance Status:* Order & TP/SL Placed!"
         send_telegram_msg(msg)
-        print(f"✅ Trade Executed & Telegram Alert Sent: {side} at {price}")
+        print("✅ Trade and TP/SL Orders Placed Successfully!")
+
     except BinanceAPIException as e:
-        error_msg = f"❌ *Binance Order Failed! Order Error:* `{e.message}`"
-        send_telegram_msg(error_msg)
+        error_msg = f"❌ *Binance Execution Error:* `{e.message}`"
         print(error_msg)
+        send_telegram_msg(error_msg)
     except Exception as e:
         print(f"❌ Order Error: {e}")
 
 def trading_loop():
-    print("🤖 6-Factor Signal & Trading Bot Active...")
+    print("🤖 Fixed 6-Factor AI Trading Bot Running...")
     while True:
         try:
-            df = get_data()
-            if df is not None:
-                score, price, atr = calculate_score(df)
-                print(f"📊 Current Score: {score}/100 | Price: ${price}")
-                if score >= MIN_SCORE:
-                    execute_trade('BUY', price, atr, score)
-                    time.sleep(300) # ট্রেড নেওয়ার পর ৫ মিনিট বিরতি
+            if check_active_position():
+                print("⏳ Trade active on Binance. Waiting for TP/SL to hit...")
+            else:
+                df = get_data()
+                if df is not None:
+                    side_action, score, price = calculate_score(df)
+                    
+                    # 🔴 মূল ফিক্স: কেবল স্কোর ৭৫ বা তার বেশি হলে এবং সাইড থাকলে ট্রেড নেবে!
+                    if side_action and score >= MIN_SCORE:
+                        execute_trade(side_action, price, score)
+                        time.sleep(300) # ট্রেড নেওয়ার পর ৫ মিনিট পজ
+                    else:
+                        print(f"⏸️ Waiting for strong signal (Score below {MIN_SCORE}%).")
         except Exception as e:
             print(f"❌ Loop Error: {e}")
+        
         time.sleep(30)
 
 if __name__ == "__main__":
-    threading.Thread(target=trading_loop, daemon=True).start()
+    t = threading.Thread(target=trading_loop)
+    t.daemon = True
+    t.start()
+    
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
