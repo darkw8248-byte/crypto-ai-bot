@@ -138,11 +138,11 @@ def analyze_hybrid_strategy(df):
     lower_shadow = min(curr_close, curr_open) - curr_low
     upper_shadow = curr_high - max(curr_close, curr_open)
     
-    is_bullish_pattern = (prev_close < prev_open and curr_close > prev_open) or (lower_shadow > 2 * body)
-    is_bearish_pattern = (prev_close > prev_open and curr_close < prev_open) or (upper_shadow > 2 * body)
+    is_bullish_pattern = (prev_close < prev_open and curr_close > prev_open) or (body > 0 and lower_shadow > 2 * body)
+    is_bearish_pattern = (prev_close > prev_open and curr_close < prev_open) or (body > 0 and upper_shadow > 2 * body)
     
-    near_support = abs(curr_low - support) / support < 0.003 or curr_close > resistance
-    near_resistance = abs(curr_high - resistance) / resistance < 0.003 or curr_close < support
+    near_support = abs(curr_low - support) / support < 0.003 or curr_close < support
+    near_resistance = abs(curr_high - resistance) / resistance < 0.003 or curr_close > resistance
 
     good_volume = curr_vol > (vol_sma * 1.2)
 
