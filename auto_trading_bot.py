@@ -1,140 +1,202 @@
-import os, time, threading, requests, pandas as pd, ta
-from flask import Flask
+import os
+import time
+import requests
+import pandas as pd
+import numpy as np
+import ta
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Strict 100% 6-Condition AI Bot is Running!", 200
-
+# ট্রেডিং সেটিংস
 SYMBOL = "BTCUSDT"
-TRADE_QUANTITY = 0.002
+TIMEFRAME = "15m"
 
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-try:
-    client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
-    client.FUTURES_URL = 'https://testnet.binancefuture.com/fapi'
-except Exception as e:
-    print(f"❌ API Setup Error: {e}")
-
-def send_telegram_msg(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-            requests.post(url, data=payload, timeout=10)
-        except Exception as e:
-            print(f"❌ Telegram Error: {e}")
-
-def check_active_position():
+def send_telegram_msg(msg):
+    """টেলিগ্রামে মেসেজ পাঠানোর ফাংশন"""
     try:
-        positions = client.futures_position_information(symbol=SYMBOL)
-        for pos in positions:
-            if float(pos['positionAmt']) != 0:
-                return True
-        return False
-    except:
-        return True
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        if token and chat_id:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+    except Exception as e:
+        print(f"❌ Telegram Error: {e}")
 
 def get_data():
+    """মার্কেট ডেটা, ইন্ডিকেটর, ATR এবং ভলিউম ক্যালকুলেশন"""
     try:
-        klines = client.futures_klines(symbol=SYMBOL, interval='15m', limit=100)
-        df = pd.DataFrame(klines, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'ct', 'qav', 't', 'tbav', 'tbqv', 'i'])
-        for col in ['open', 'high', 'low', 'close', 'vol']: 
+        client = Client()
+        klines = client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
+        df = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+        
+        for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
+            
+        # ১. বেসিক ইন্ডিকেটর
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+        macd = ta.trend.MACD(df['close'])
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
+        df['ema_50'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
+        df['ema_200'] = ta.trend.EMAIndicator(df['close'], window=200).ema_indicator()
+        
+        bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
+        df['bb_high'] = bb.bollinger_hband()
+        df['bb_low'] = bb.bollinger_lband()
+        
+        # ২. সাপোর্ট, রেজিস্ট্যান্স এবং ভলিউম ফিল্টার
+        df['support'] = df['low'].rolling(window=20).min()
+        df['resistance'] = df['high'].rolling(window=20).max()
+        df['vol_sma'] = df['volume'].rolling(window=20).mean() # এভারেজ ভলিউম
+        
+        # ৩. ATR (ডাইনামিক স্টপ-লসের জন্য)
+        df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
+        
         return df
-    except:
+    except Exception as e:
+        print(f"❌ Data Fetch Error: {e}")
         return None
 
-# 🧠 ৬টির মধ্যে ৬টি শর্তই মিলতে হবে
-def analyze_strict_6_conditions(df):
-    df['rsi'] = ta.momentum.rsi(df['close'], window=14)
-    macd = ta.trend.MACD(df['close'])
-    df['macd'] = macd.macd_diff()
-    df['ema50'] = ta.trend.ema_indicator(df['close'], window=50)
-    df['ema200'] = ta.trend.ema_indicator(df['close'], window=200)
-    bb = ta.volatility.BollingerBands(df['close'])
-    df['bb_high'] = bb.bollinger_hband()
-    df['bb_low'] = bb.bollinger_lband()
+def analyze_hybrid_strategy(df):
+    """প্রাইস অ্যাকশন + ইন্ডিকেটর + ভলিউম ফিল্টার লজিক"""
+    curr_close = df['close'].iloc[-1]
+    prev_close = df['close'].iloc[-2]
+    curr_open = df['open'].iloc[-1]
+    prev_open = df['open'].iloc[-2]
+    curr_high = df['high'].iloc[-1]
+    curr_low = df['low'].iloc[-1]
+    curr_vol = df['volume'].iloc[-1]
     
-    df.dropna(inplace=True)
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    vol_mean = df['vol'].rolling(20).mean().iloc[-1]
+    rsi = df['rsi'].iloc[-1]
+    macd = df['macd'].iloc[-1]
+    macd_signal = df['macd_signal'].iloc[-1]
+    ema_50 = df['ema_50'].iloc[-1]
+    ema_200 = df['ema_200'].iloc[-1]
+    bb_high = df['bb_high'].iloc[-1]
+    bb_low = df['bb_low'].iloc[-1]
     
-    # BUY-এর জন্য ৬টি শর্ত
-    c1_buy = latest['close'] > latest['ema50']
-    c2_buy = latest['close'] > latest['ema200']
-    c3_buy = latest['rsi'] < 40
-    c4_buy = latest['macd'] > 0 and prev['macd'] <= 0
-    c5_buy = latest['close'] <= latest['bb_low']
-    c6_buy = latest['vol'] > vol_mean
+    support = df['support'].iloc[-2]
+    resistance = df['resistance'].iloc[-2]
+    vol_sma = df['vol_sma'].iloc[-2]
+    current_atr = df['atr'].iloc[-1]
 
-    # SELL-এর জন্য ৬টি শর্ত
-    c1_sell = latest['close'] < latest['ema50']
-    c2_sell = latest['close'] < latest['ema200']
-    c3_sell = latest['rsi'] > 60
-    c4_sell = latest['macd'] < 0 and prev['macd'] >= 0
-    c5_sell = latest['close'] >= latest['bb_high']
-    c6_sell = latest['vol'] > vol_mean
+    # কড়া ৬টি শর্ত
+    buy_conditions = [
+        rsi < 45,
+        macd > macd_signal,
+        curr_close > ema_50,
+        ema_50 > ema_200,
+        curr_close <= bb_low * 1.005,
+        curr_close > prev_close
+    ]
+    
+    sell_conditions = [
+        rsi > 55,
+        macd < macd_signal,
+        curr_close < ema_50,
+        ema_50 < ema_200,
+        curr_close >= bb_high * 0.995,
+        curr_close < prev_close
+    ]
 
-    side = None
-    if c1_buy and c2_buy and c3_buy and c4_buy and c5_buy and c6_buy:
-        side = "BUY"
-    elif c1_sell and c2_sell and c3_sell and c4_sell and c5_sell and c6_sell:
-        side = "SELL"
+    # ক্যান্ডেলস্টিক প্যাটার্ন ও লেভেল লজিক
+    body = abs(curr_close - curr_open)
+    lower_shadow = min(curr_close, curr_open) - curr_low
+    upper_shadow = curr_high - max(curr_close, curr_open)
+    
+    is_bullish_pattern = (prev_close < prev_open and curr_close > prev_open) or (lower_shadow > 2 * body)
+    is_bearish_pattern = (prev_close > prev_open and curr_close < prev_open) or (upper_shadow > 2 * body)
+    
+    near_support = abs(curr_low - support) / support < 0.003 or curr_close > resistance
+    near_resistance = abs(curr_high - resistance) / resistance < 0.003 or curr_close < support
 
-    return side, latest['close']
+    # ভলিউম স্পাইক (স্বাভাবিকের চেয়ে ২০% বেশি ভলিউম থাকতে হবে)
+    good_volume = curr_vol > (vol_sma * 1.2)
 
-def execute_trade(side, price):
-    if side == 'BUY':
-        tp = round(price * 1.015, 1)
-        sl = round(price * 0.992, 1)
-        exit_side = 'SELL'
-    else:
-        tp = round(price * 0.985, 1)
-        sl = round(price * 1.008, 1)
-        exit_side = 'BUY'
+    # যেকোনো ৪টি ইন্ডিকেটর শর্ত + লেভেল/প্যাটার্ন + ভালো ভলিউম
+    if sum(buy_conditions) >= 4 and (is_bullish_pattern or near_support) and good_volume:
+        return "BUY", curr_close, current_atr
+        
+    if sum(sell_conditions) >= 4 and (is_bearish_pattern or near_resistance) and good_volume:
+        return "SELL", curr_close, current_atr
 
-    try:
-        client.futures_create_order(symbol=SYMBOL, side=side, type='MARKET', quantity=TRADE_QUANTITY)
-        client.futures_create_order(symbol=SYMBOL, side=exit_side, type='TAKE_PROFIT_MARKET', stopPrice=tp, closePosition=True)
-        client.futures_create_order(symbol=SYMBOL, side=exit_side, type='STOP_MARKET', stopPrice=sl, closePosition=True)
-
-        msg = f"🔥 *100% STRICT SIGNAL EXECUTED*\n\n" \
-              f"🔹 *Action:* {side}\n" \
-              f"💰 *Price:* ${price}\n" \
-              f"🎯 *TP:* ${tp}\n" \
-              f"🛑 *SL:* ${sl}\n\n" \
-              f"✅ *All 6 Indicators Confirmed!*"
-        send_telegram_msg(msg)
-    except Exception as e:
-        print(f"❌ Execution Error: {e}")
+    return None, None, None
 
 def trading_loop():
-    print("🤖 Strict 6-Condition Trading Engine Active...")
-    send_telegram_msg("🚀 Strict 6-Condition Bot is Active and Scanning!")
+    """স্মার্ট ট্রেডিং ইঞ্জিন: ATR, Trailing SL এবং Auto Position Close সহ"""
+    print("🤖 Ultra-Pro Trading Engine Active...")
+    send_telegram_msg("🚀 *Ultra-Pro Bot Active!*\n✅ Indicators & Price Action\n✅ Volume Filter\n✅ Dynamic ATR (TP/SL)\n✅ Trailing SL Enabled")
+    
+    active_position = None
+    target_tp = 0
+    current_sl = 0
+
     while True:
         try:
-            if not check_active_position():
-                df = get_data()
-                if df is not None:
-                    side, price = analyze_strict_6_conditions(df)
+            df = get_data()
+            if df is not None:
+                curr_price = df['close'].iloc[-1]
+                current_atr = df['atr'].iloc[-1]
+
+                # --- রানিং ট্রেড ম্যানেজমেন্ট (Trailing SL & Close Logic) ---
+                if active_position == "BUY":
+                    # ATR ভিত্তিক ট্রেইলিং স্টপ-লস (১.৫ গুন ATR)
+                    new_sl = curr_price - (1.5 * current_atr)
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+                        print(f"🔒 BUY Trailing SL Moved Up: ${current_sl:.2f}")
+
+                    # প্রফিট বা লস হিট করলে ট্রেড ক্লোজ
+                    if curr_price >= target_tp:
+                        send_telegram_msg(f"✅ *TP HIT!* BUY Trade Closed at ${curr_price:.2f} 🎯")
+                        active_position = None
+                    elif curr_price <= current_sl:
+                        send_telegram_msg(f"🛑 *SL HIT!* BUY Trade Closed at ${curr_price:.2f}")
+                        active_position = None
+
+                elif active_position == "SELL":
+                    new_sl = curr_price + (1.5 * current_atr)
+                    if current_sl == 0 or new_sl < current_sl:
+                        current_sl = new_sl
+                        print(f"🔒 SELL Trailing SL Moved Down: ${current_sl:.2f}")
+
+                    if curr_price <= target_tp:
+                        send_telegram_msg(f"✅ *TP HIT!* SELL Trade Closed at ${curr_price:.2f} 🎯")
+                        active_position = None
+                    elif curr_price >= current_sl:
+                        send_telegram_msg(f"🛑 *SL HIT!* SELL Trade Closed at ${curr_price:.2f}")
+                        active_position = None
+
+                # --- নতুন ট্রেড খোঁজা (যদি কোনো ট্রেড রানিং না থাকে) ---
+                if not active_position:
+                    side, price, atr_val = analyze_hybrid_strategy(df)
                     if side:
-                        execute_trade(side, price)
-                        time.sleep(300)
+                        active_position = side
+                        
+                        # ATR ব্যবহার করে ১:২ Risk-Reward রেশিও
+                        if side == "BUY":
+                            current_sl = price - (1.5 * atr_val)
+                            target_tp = price + (2.5 * atr_val)
+                        else:
+                            current_sl = price + (1.5 * atr_val)
+                            target_tp = price - (2.5 * atr_val)
+                        
+                        msg = f"🚨 *PRO {side} SIGNAL DETECTED!*\n\n" \
+                              f"💎 *Pair:* {SYMBOL}\n" \
+                              f"💰 *Entry:* ${price:.2f}\n" \
+                              f"🎯 *Dynamic TP:* ${target_tp:.2f}\n" \
+                              f"🛑 *Dynamic SL:* ${current_sl:.2f}\n" \
+                              f"📊 *ATR Value:* {atr_val:.2f}\n\n" \
+                              f"⚡ *High Volume Setup Confirmed!*"
+                        
+                        send_telegram_msg(msg)
+                        time.sleep(300) # বারবার সিগন্যাল ঠেকানোর জন্য ৫ মিনিটের ব্রেক
+
+            # API লিমিট সুরক্ষিত রাখতে ৬০ সেকেন্ড অপেক্ষা
+            time.sleep(60)
+
         except Exception as e:
-            print(f"❌ Loop Error: {e}")
-        time.sleep(30)
+            print(f"❌ Execution Error: {e}")
+            time.sleep(60)
 
 if __name__ == "__main__":
-    t = threading.Thread(target=trading_loop)
-    t.daemon = True
-    t.start()
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    trading_loop()
