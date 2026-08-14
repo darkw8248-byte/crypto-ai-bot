@@ -267,6 +267,7 @@ def trading_loop():
                               f"⚡ *High Volume Setup Confirmed!*"
                         
                         send_telegram_msg(msg)
+                        place_demo_order(side, price, current_sl, target_tp)
 
             time.sleep(30)
 
