@@ -1,17 +1,30 @@
 import os
 import time
+import threading
 import requests
 import pandas as pd
 import numpy as np
 import ta
 from binance.client import Client
+from flask import Flask
+
+# Render পোর্ট এরর এড়াতে Flask ওয়েব সার্ভার
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running live!"
+
+def run_flask():
+    # Render ডাইনামিক পোর্ট ব্যবহার করে, সেটিংস অটো-ম্যাচ করার জন্য
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # ট্রেডিং সেটিংস
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "15m"
 
 def send_telegram_msg(msg):
-    """টেলিগ্রামে মেসেজ পাঠানোর ফাংশন"""
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
         chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -22,7 +35,6 @@ def send_telegram_msg(msg):
         print(f"❌ Telegram Error: {e}")
 
 def get_data():
-    """মার্কেট ডেটা, ইন্ডিকেটর, ATR এবং ভলিউম ক্যালকুলেশন"""
     try:
         client = Client()
         klines = client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
@@ -31,7 +43,6 @@ def get_data():
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = df[col].astype(float)
             
-        # ১. বেসিক ইন্ডিকেটর
         df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
         macd = ta.trend.MACD(df['close'])
         df['macd'] = macd.macd()
@@ -43,12 +54,9 @@ def get_data():
         df['bb_high'] = bb.bollinger_hband()
         df['bb_low'] = bb.bollinger_lband()
         
-        # ২. সাপোর্ট, রেজিস্ট্যান্স এবং ভলিউম ফিল্টার
         df['support'] = df['low'].rolling(window=20).min()
         df['resistance'] = df['high'].rolling(window=20).max()
-        df['vol_sma'] = df['volume'].rolling(window=20).mean() # এভারেজ ভলিউম
-        
-        # ৩. ATR (ডাইনামিক স্টপ-লসের জন্য)
+        df['vol_sma'] = df['volume'].rolling(window=20).mean()
         df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
         
         return df
@@ -57,7 +65,6 @@ def get_data():
         return None
 
 def analyze_hybrid_strategy(df):
-    """প্রাইস অ্যাকশন + ইন্ডিকেটর + ভলিউম ফিল্টার লজিক"""
     curr_close = df['close'].iloc[-1]
     prev_close = df['close'].iloc[-2]
     curr_open = df['open'].iloc[-1]
@@ -79,7 +86,6 @@ def analyze_hybrid_strategy(df):
     vol_sma = df['vol_sma'].iloc[-2]
     current_atr = df['atr'].iloc[-1]
 
-    # কড়া ৬টি শর্ত
     buy_conditions = [
         rsi < 45,
         macd > macd_signal,
@@ -98,7 +104,6 @@ def analyze_hybrid_strategy(df):
         curr_close < prev_close
     ]
 
-    # ক্যান্ডেলস্টিক প্যাটার্ন ও লেভেল লজিক
     body = abs(curr_close - curr_open)
     lower_shadow = min(curr_close, curr_open) - curr_low
     upper_shadow = curr_high - max(curr_close, curr_open)
@@ -109,10 +114,8 @@ def analyze_hybrid_strategy(df):
     near_support = abs(curr_low - support) / support < 0.003 or curr_close > resistance
     near_resistance = abs(curr_high - resistance) / resistance < 0.003 or curr_close < support
 
-    # ভলিউম স্পাইক (স্বাভাবিকের চেয়ে ২০% বেশি ভলিউম থাকতে হবে)
     good_volume = curr_vol > (vol_sma * 1.2)
 
-    # যেকোনো ৪টি ইন্ডিকেটর শর্ত + লেভেল/প্যাটার্ন + ভালো ভলিউম
     if sum(buy_conditions) >= 4 and (is_bullish_pattern or near_support) and good_volume:
         return "BUY", curr_close, current_atr
         
@@ -122,9 +125,8 @@ def analyze_hybrid_strategy(df):
     return None, None, None
 
 def trading_loop():
-    """স্মার্ট ট্রেডিং ইঞ্জিন: ATR, Trailing SL এবং Auto Position Close সহ"""
     print("🤖 Ultra-Pro Trading Engine Active...")
-    send_telegram_msg("🚀 *Ultra-Pro Bot Active!*\n✅ Indicators & Price Action\n✅ Volume Filter\n✅ Dynamic ATR (TP/SL)\n✅ Trailing SL Enabled")
+    send_telegram_msg("🚀 *Ultra-Pro Bot Active!*\n✅ Indicators & Price Action\n✅ Volume Filter\n✅ Dynamic ATR\n✅ Trailing SL\n✅ Server Port Fixed")
     
     active_position = None
     target_tp = 0
@@ -137,15 +139,11 @@ def trading_loop():
                 curr_price = df['close'].iloc[-1]
                 current_atr = df['atr'].iloc[-1]
 
-                # --- রানিং ট্রেড ম্যানেজমেন্ট (Trailing SL & Close Logic) ---
                 if active_position == "BUY":
-                    # ATR ভিত্তিক ট্রেইলিং স্টপ-লস (১.৫ গুন ATR)
                     new_sl = curr_price - (1.5 * current_atr)
                     if new_sl > current_sl:
                         current_sl = new_sl
-                        print(f"🔒 BUY Trailing SL Moved Up: ${current_sl:.2f}")
 
-                    # প্রফিট বা লস হিট করলে ট্রেড ক্লোজ
                     if curr_price >= target_tp:
                         send_telegram_msg(f"✅ *TP HIT!* BUY Trade Closed at ${curr_price:.2f} 🎯")
                         active_position = None
@@ -157,7 +155,6 @@ def trading_loop():
                     new_sl = curr_price + (1.5 * current_atr)
                     if current_sl == 0 or new_sl < current_sl:
                         current_sl = new_sl
-                        print(f"🔒 SELL Trailing SL Moved Down: ${current_sl:.2f}")
 
                     if curr_price <= target_tp:
                         send_telegram_msg(f"✅ *TP HIT!* SELL Trade Closed at ${curr_price:.2f} 🎯")
@@ -166,13 +163,11 @@ def trading_loop():
                         send_telegram_msg(f"🛑 *SL HIT!* SELL Trade Closed at ${curr_price:.2f}")
                         active_position = None
 
-                # --- নতুন ট্রেড খোঁজা (যদি কোনো ট্রেড রানিং না থাকে) ---
                 if not active_position:
                     side, price, atr_val = analyze_hybrid_strategy(df)
                     if side:
                         active_position = side
                         
-                        # ATR ব্যবহার করে ১:২ Risk-Reward রেশিও
                         if side == "BUY":
                             current_sl = price - (1.5 * atr_val)
                             target_tp = price + (2.5 * atr_val)
@@ -189,9 +184,8 @@ def trading_loop():
                               f"⚡ *High Volume Setup Confirmed!*"
                         
                         send_telegram_msg(msg)
-                        time.sleep(300) # বারবার সিগন্যাল ঠেকানোর জন্য ৫ মিনিটের ব্রেক
+                        time.sleep(300)
 
-            # API লিমিট সুরক্ষিত রাখতে ৬০ সেকেন্ড অপেক্ষা
             time.sleep(60)
 
         except Exception as e:
@@ -199,4 +193,7 @@ def trading_loop():
             time.sleep(60)
 
 if __name__ == "__main__":
+    # ব্যাকগ্রাউন্ডে ফ্ল্যাস্ক ওয়েবসাইট চালু হবে যাতে Render পোর্ট এরর না দেয়
+    threading.Thread(target=run_flask, daemon=True).start()
+    # মেইন ট্রেডিং লুপ চালু
     trading_loop()
