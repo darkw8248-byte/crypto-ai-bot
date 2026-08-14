@@ -34,9 +34,9 @@ def send_telegram_msg(msg):
             requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
-        
-        def get_4h_trend():
-            try:
+
+def get_4h_trend():
+    try:
         klines = binance_client.futures_klines(symbol=SYMBOL, interval="4h", limit=100)
         df_4h = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
         df_4h['close'] = df_4h['close'].astype(float)
@@ -124,16 +124,16 @@ def analyze_hybrid_strategy(df):
     curr_close <= bb_low * 1.005,
     curr_close > prev_close,
     trend_4h == "BULLISH"
-]
+    ]
 
-sell_conditions = [
+    sell_conditions = [
     rsi > 55,
     macd < macd_signal,
     ema_50 < ema_200,
     curr_close >= bb_high * 0.995,
     curr_close < prev_close,
     trend_4h == "BEARISH"
-]
+    ]
     body = abs(curr_close - curr_open)
     lower_shadow = min(curr_close, curr_open) - curr_low
     upper_shadow = curr_high - max(curr_close, curr_open)
@@ -195,7 +195,7 @@ def trading_loop():
                         send_telegram_msg(f"🛑 *SL HIT!* SELL Trade Closed at ${curr_price:.2f}")
                         active_position = None
 
-                    if not active_position:
+                if not active_position:
                     side, price, atr_val, rr_mult = analyze_hybrid_strategy(df)
                     if side:
                         active_position = side
@@ -206,11 +206,6 @@ def trading_loop():
                         else:
                             current_sl = price + (1.5 * atr_val)
                             target_tp = price - (rr_mult * atr_val)
-
-                        msg = f"🚨 *PRO {side} SIGNAL DETECTED!*\n\n" \
-                              f"💎 *Pair:* {SYMBOL}\n" \
-                              f"💰 *Entry:* ${price:.2f}\n" \
-                              f"🎯 *Dynamic TP:* ${target_tp:.2f}\n"
                         
                         msg = f"🚨 *PRO {side} SIGNAL DETECTED!*\n\n" \
                               f"💎 *Pair:* {SYMBOL}\n" \
@@ -230,7 +225,5 @@ def trading_loop():
             time.sleep(60)
 
 if __name__ == "__main__":
-    # ব্যাকগ্রাউন্ডে ফ্ল্যাস্ক ওয়েবসাইট চালু হবে যাতে Render পোর্ট এরর না দেয়
     threading.Thread(target=run_flask, daemon=True).start()
-    # মেইন ট্রেডিং লুপ চালু
     trading_loop()
