@@ -23,6 +23,7 @@ def run_flask():
 # ট্রেডিং সেটিংস
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "15m"
+binance_client = Client()
 
 def send_telegram_msg(msg):
     try:
@@ -36,8 +37,7 @@ def send_telegram_msg(msg):
 
 def get_data():
     try:
-        client = Client()
-        klines = client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
+        klines = binance_client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
         df = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
         
         for col in ['open', 'high', 'low', 'close', 'volume']:
@@ -65,31 +65,30 @@ def get_data():
         return None
 
 def analyze_hybrid_strategy(df):
-    curr_close = df['close'].iloc[-1]
+    curr_close = df['close'].iloc[-2]
     prev_close = df['close'].iloc[-2]
-    curr_open = df['open'].iloc[-1]
+    curr_open = df['open'].iloc[-2]
     prev_open = df['open'].iloc[-2]
-    curr_high = df['high'].iloc[-1]
+    curr_high = df['high'].iloc[-2]
     curr_low = df['low'].iloc[-1]
-    curr_vol = df['volume'].iloc[-1]
+    curr_vol = df['volume'].iloc[-2]
     
-    rsi = df['rsi'].iloc[-1]
-    macd = df['macd'].iloc[-1]
-    macd_signal = df['macd_signal'].iloc[-1]
-    ema_50 = df['ema_50'].iloc[-1]
-    ema_200 = df['ema_200'].iloc[-1]
-    bb_high = df['bb_high'].iloc[-1]
-    bb_low = df['bb_low'].iloc[-1]
+    rsi = df['rsi'].iloc[-2]
+    macd = df['macd'].iloc[-2]
+    macd_signal = df['macd_signal'].iloc[-2]
+    ema_50 = df['ema_50'].iloc[-2]
+    ema_200 = df['ema_200'].iloc[-2]
+    bb_high = df['bb_high'].iloc[-2]
+    bb_low = df['bb_low'].iloc[-2]
     
     support = df['support'].iloc[-2]
     resistance = df['resistance'].iloc[-2]
     vol_sma = df['vol_sma'].iloc[-2]
-    current_atr = df['atr'].iloc[-1]
+    current_atr = df['atr'].iloc[-2]
 
     buy_conditions = [
         rsi < 45,
         macd > macd_signal,
-        curr_close > ema_50,
         ema_50 > ema_200,
         curr_close <= bb_low * 1.005,
         curr_close > prev_close
@@ -98,7 +97,7 @@ def analyze_hybrid_strategy(df):
     sell_conditions = [
         rsi > 55,
         macd < macd_signal,
-        curr_close < ema_50,
+      
         ema_50 < ema_200,
         curr_close >= bb_high * 0.995,
         curr_close < prev_close
