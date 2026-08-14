@@ -34,6 +34,35 @@ def send_telegram_msg(msg):
             requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
+        def get_4h_trend():
+    try:
+        klines = binance_client.futures_klines(symbol=SYMBOL, interval="4h", limit=100)
+        df_4h = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+        df_4h['close'] = df_4h['close'].astype(float)
+        
+        ema_50 = ta.trend.EMAIndicator(df_4h['close'], window=50).ema_indicator().iloc[-2]
+        ema_200 = ta.trend.EMAIndicator(df_4h['close'], window=200).ema_indicator().iloc[-2]
+        
+        if ema_50 > ema_200:
+            return "BULLISH"
+        elif ema_50 < ema_200:
+            return "BEARISH"
+        return "SIDEWAYS"
+    except Exception as e:
+        print(f"❌ 4H Trend Check Error: {e}")
+        return "NEUTRAL"
+
+def calculate_dynamic_rr(df):
+    current_vol = df['volume'].iloc[-2]
+    vol_sma = df['vol_sma'].iloc[-2]
+    rsi = df['rsi'].iloc[-2]
+
+    if current_vol > (vol_sma * 2.0) and (rsi > 65 or rsi < 35):
+        return 5.0
+    elif current_vol > (vol_sma * 1.3):
+        return 3.0
+    else:
+        return 2.0
 
 def get_data():
     try:
@@ -65,12 +94,13 @@ def get_data():
         return None
 
 def analyze_hybrid_strategy(df):
+    trend_4h = get_4h_trend()
     curr_close = df['close'].iloc[-2]
-    prev_close = df['close'].iloc[-2]
+    prev_close = df['close'].iloc[-3]
     curr_open = df['open'].iloc[-2]
-    prev_open = df['open'].iloc[-2]
+    prev_open = df['open'].iloc[-3]
     curr_high = df['high'].iloc[-2]
-    curr_low = df['low'].iloc[-1]
+    curr_low = df['low'].iloc[-2]
     curr_vol = df['volume'].iloc[-2]
     
     rsi = df['rsi'].iloc[-2]
@@ -87,22 +117,22 @@ def analyze_hybrid_strategy(df):
     current_atr = df['atr'].iloc[-2]
 
     buy_conditions = [
-        rsi < 45,
-        macd > macd_signal,
-        ema_50 > ema_200,
-        curr_close <= bb_low * 1.005,
-        curr_close > prev_close
-    ]
-    
-    sell_conditions = [
-        rsi > 55,
-        macd < macd_signal,
-      
-        ema_50 < ema_200,
-        curr_close >= bb_high * 0.995,
-        curr_close < prev_close
-    ]
+    rsi < 45,
+    macd > macd_signal,
+    ema_50 > ema_200,
+    curr_close <= bb_low * 1.005,
+    curr_close > prev_close,
+    trend_4h == "BULLISH"
+]
 
+sell_conditions = [
+    rsi > 55,
+    macd < macd_signal,
+    ema_50 < ema_200,
+    curr_close >= bb_high * 0.995,
+    curr_close < prev_close,
+    trend_4h == "BEARISH"
+]
     body = abs(curr_close - curr_open)
     lower_shadow = min(curr_close, curr_open) - curr_low
     upper_shadow = curr_high - max(curr_close, curr_open)
@@ -115,13 +145,15 @@ def analyze_hybrid_strategy(df):
 
     good_volume = curr_vol > (vol_sma * 1.2)
 
-    if sum(buy_conditions) >= 4 and (is_bullish_pattern or near_support) and good_volume:
-        return "BUY", curr_close, current_atr
-        
-    if sum(sell_conditions) >= 4 and (is_bearish_pattern or near_resistance) and good_volume:
-        return "SELL", curr_close, current_atr
+    rr_multiplier = calculate_dynamic_rr(df)
 
-    return None, None, None
+    if sum(buy_conditions) >= 4 and (is_bullish_pattern or near_support) and good_volume:
+        return "BUY", curr_close, current_atr, rr_multiplier
+
+    if sum(sell_conditions) >= 4 and (is_bearish_pattern or near_resistance) and good_volume:
+        return "SELL", curr_close, current_atr, rr_multiplier
+
+    return None, None, None, None
 
 def trading_loop():
     print("🤖 Ultra-Pro Trading Engine Active...")
@@ -163,16 +195,16 @@ def trading_loop():
                         active_position = None
 
                 if not active_position:
-                    side, price, atr_val = analyze_hybrid_strategy(df)
-                    if side:
-                        active_position = side
-                        
-                        if side == "BUY":
-                            current_sl = price - (1.5 * atr_val)
-                            target_tp = price + (2.5 * atr_val)
-                        else:
-                            current_sl = price + (1.5 * atr_val)
-                            target_tp = price - (2.5 * atr_val)
+    side, price, atr_val, rr_mult = analyze_hybrid_strategy(df)
+    if side:
+        active_position = side
+
+        if side == "BUY":
+            current_sl = price - (1.5 * atr_val)
+            target_tp = price + (rr_mult * atr_val)
+        else:
+            current_sl = price + (1.5 * atr_val)
+            target_tp = price - (rr_mult * atr_val)
                         
                         msg = f"🚨 *PRO {side} SIGNAL DETECTED!*\n\n" \
                               f"💎 *Pair:* {SYMBOL}\n" \
