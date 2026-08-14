@@ -43,7 +43,9 @@ def get_4h_trend():
         
         ema_50 = ta.trend.EMAIndicator(df_4h['close'], window=50).ema_indicator().iloc[-2]
         ema_200 = ta.trend.EMAIndicator(df_4h['close'], window=200).ema_indicator().iloc[-2]
-        
+
+        if pd.isna(ema_50) or pd.isna(ema_200):
+            return "NEUTRAL"
         if ema_50 > ema_200:
             return "BULLISH"
         elif ema_50 < ema_200:
@@ -158,11 +160,13 @@ def analyze_hybrid_strategy(df):
 
 def trading_loop():
     print("🤖 Ultra-Pro Trading Engine Active...")
-    send_telegram_msg("🚀 *Ultra-Pro Bot Active!*\n✅ Indicators & Price Action\n✅ Volume Filter\n✅ Dynamic ATR\n✅ Trailing SL\n✅ Server Port Fixed")
+    send_telegram_msg("🚀 *Ultra-Pro Bot Active!*\n✅ Indicators & Price Action\n✅ Volume Filter\n✅ Dynamic ATR\n✅ Fixed Trailing SL Logic")
     
     active_position = None
     target_tp = 0
     current_sl = 0
+    highest_price = 0
+    lowest_price = float('inf')
 
     while True:
         try:
@@ -172,9 +176,11 @@ def trading_loop():
                 current_atr = df['atr'].iloc[-1]
 
                 if active_position == "BUY":
-                    new_sl = curr_price - (1.5 * current_atr)
-                    if new_sl > current_sl:
-                        current_sl = new_sl
+                    if curr_price > highest_price:
+                        highest_price = curr_price
+                        new_sl = highest_price - (1.5 * current_atr)
+                        if new_sl > current_sl:
+                            current_sl = new_sl
 
                     if curr_price >= target_tp:
                         send_telegram_msg(f"✅ *TP HIT!* BUY Trade Closed at ${curr_price:.2f} 🎯")
@@ -184,9 +190,11 @@ def trading_loop():
                         active_position = None
 
                 elif active_position == "SELL":
-                    new_sl = curr_price + (1.5 * current_atr)
-                    if current_sl == 0 or new_sl < current_sl:
-                        current_sl = new_sl
+                    if curr_price < lowest_price:
+                        lowest_price = curr_price
+                        new_sl = lowest_price + (1.5 * current_atr)
+                        if current_sl == 0 or new_sl < current_sl:
+                            current_sl = new_sl
 
                     if curr_price <= target_tp:
                         send_telegram_msg(f"✅ *TP HIT!* SELL Trade Closed at ${curr_price:.2f} 🎯")
@@ -203,9 +211,11 @@ def trading_loop():
                         if side == "BUY":
                             current_sl = price - (1.5 * atr_val)
                             target_tp = price + (rr_mult * atr_val)
+                            highest_price = price
                         else:
                             current_sl = price + (1.5 * atr_val)
                             target_tp = price - (rr_mult * atr_val)
+                            lowest_price = price
                         
                         msg = f"🚨 *PRO {side} SIGNAL DETECTED!*\n\n" \
                               f"💎 *Pair:* {SYMBOL}\n" \
@@ -216,14 +226,12 @@ def trading_loop():
                               f"⚡ *High Volume Setup Confirmed!*"
                         
                         send_telegram_msg(msg)
-                        time.sleep(120)
 
-            time.sleep(60)
+            time.sleep(30)
 
         except Exception as e:
             print(f"❌ Execution Error: {e}")
             time.sleep(60)
-
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     trading_loop()
