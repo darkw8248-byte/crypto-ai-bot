@@ -37,7 +37,7 @@ def send_telegram_msg(msg):
 
 def get_4h_trend():
     try:
-        klines = binance_client.futures_klines(symbol=SYMBOL, interval="4h", limit=100)
+        klines = binance_client.futures_klines(symbol=SYMBOL, interval="4h", limit=300)
         df_4h = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
         df_4h['close'] = df_4h['close'].astype(float)
         
@@ -67,7 +67,7 @@ def calculate_dynamic_rr(df):
 
 def get_data():
     try:
-        klines = binance_client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
+        klines = binance_client.futures_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=300)
         df = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
         
         for col in ['open', 'high', 'low', 'close', 'volume']:
@@ -216,7 +216,7 @@ def trading_loop():
                               f"⚡ *High Volume Setup Confirmed!*"
                         
                         send_telegram_msg(msg)
-                        time.sleep(300)
+                        time.sleep(120)
 
             time.sleep(60)
 
