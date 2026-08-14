@@ -23,8 +23,49 @@ def run_flask():
 # ট্রেডিং সেটিংস
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "15m"
-binance_client = Client()
+# টেস্টনেট এপিআই কী রিড করা
+API_KEY = os.getenv('BINANCE_TESTNET_KEY')
+API_SECRET = os.getenv('BINANCE_TESTNET_SECRET')
 
+# ডেমো ট্রেডিংয়ের জন্য testnet=True চালু
+binance_client = Client(API_KEY, API_SECRET, testnet=True)
+
+def place_demo_order(side, price, sl, tp):
+    try:
+        quantity = 0.002  # ট্রেডের পরিমাণ
+        
+        # ১. ডেমো মার্কেট অর্ডার
+        order = binance_client.futures_create_order(
+            symbol=SYMBOL,
+            side=side,
+            type='MARKET',
+            quantity=quantity
+        )
+        
+        opposite_side = "SELL" if side == "BUY" else "BUY"
+        
+        # ২. ডেমো স্টপ লস
+        binance_client.futures_create_order(
+            symbol=SYMBOL,
+            side=opposite_side,
+            type='STOP_MARKET',
+            stopPrice=round(sl, 2),
+            closePosition=True
+        )
+        
+        # ৩. ডেমো টেক প্রফিট
+        binance_client.futures_create_order(
+            symbol=SYMBOL,
+            side=opposite_side,
+            type='TAKE_PROFIT_MARKET',
+            stopPrice=round(tp, 2),
+            closePosition=True
+        )
+        
+        send_telegram_msg(f"🧪 *DEMO ORDER PLACED!*\nSide: {side}\nQty: {quantity}\nEntry: ${price:.2f}")
+    except Exception as e:
+        print(f"❌ Demo Order Error: {e}")
+        send_telegram_msg(f"⚠️ *Demo Order Failed:* {e}")
 def send_telegram_msg(msg):
     try:
         token = os.getenv('TELEGRAM_BOT_TOKEN')
