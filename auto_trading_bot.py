@@ -32,7 +32,7 @@ binance_client = Client(API_KEY, API_SECRET, testnet=True)
 
 def place_demo_order(side, price, sl, tp):
     try:
-        quantity = 0.002  # ট্রেডের পরিমাণ
+        quantity = 0.00079  # ট্রেডের পরিমাণ
         
         # ১. ডেমো মার্কেট অর্ডার
         order = binance_client.futures_create_order(
