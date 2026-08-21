@@ -55,7 +55,7 @@ RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.005"))  # 0.5% of availabl
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "3"))
 MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2"))
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "45"))
-MIN_SCORE = int(os.getenv("MIN_SCORE", "80"))
+MIN_SCORE = int(os.getenv("MIN_SCORE", "60"))
 MIN_RR = float(os.getenv("MIN_RR", "2.0"))
 MAX_RR = float(os.getenv("MAX_RR", "3.5"))
 
