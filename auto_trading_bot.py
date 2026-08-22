@@ -51,7 +51,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Risk controls
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))  # 0.5% of available USDT balance
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.008"))  # 0.5% of available USDT balance
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "3"))
 MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2"))
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "45"))
@@ -757,7 +757,7 @@ def trading_loop() -> None:
 
         except Exception as exc:
             print(f"Main loop error: {exc}")
-            time.sleep(90)
+            time.sleep(240)
 
 
 # -------------------------- MAIN ------------------------------
