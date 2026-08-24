@@ -15,7 +15,7 @@ from binance.exceptions import BinanceAPIException
 import websocket
 
 # ============================================================
-# ULTRA A+ BTCUSDT FUTURES v5 MICRO-50
+# ULTRA A+ BTCUSDT FUTURES v5.2 MICRO-50
 # ------------------------------------------------------------
 # Purpose:
 # - Built from the supplied v4 engine.
@@ -52,7 +52,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Ultra A+ v5 Micro-50 is running"
+    return "Ultra A+ v5.2 Micro-50 is running"
 
 def run_flask():
     port = int(os.getenv("PORT", "10000"))
@@ -114,11 +114,16 @@ STATE_FILE = Path(os.getenv("STATE_FILE", "/tmp/ultra_a_plus_v5_micro50_state.js
 if not API_KEY or not API_SECRET:
     raise RuntimeError("Missing Binance API credentials in environment variables")
 
+# IMPORTANT: disable python-binance startup ping. A ping is an unnecessary REST
+# request and can immediately fail when the Render IP is temporarily rate-limited.
+# The bot will use explicit REST calls only when needed, while market data comes
+# from WebSocket streams.
 client = Client(
     API_KEY,
     API_SECRET,
     testnet=TESTNET,
     requests_params={"timeout": 12},
+    ping=False,
 )
 
 SYMBOL_FILTERS = {
@@ -374,7 +379,7 @@ def _ws_worker(interval: str) -> None:
             print(f"WebSocket closed {interval}: code={code} msg={msg}")
 
         try:
-            print(f"Connecting WebSocket: {url}")
+            print(f"Connecting WebSocket: {url} (market data only; REST polling disabled)")
             ws = websocket.WebSocketApp(
                 url,
                 on_message=on_message,
@@ -1516,9 +1521,46 @@ def reconcile_position_and_result() -> None:
     reset_position_state()
     save_state()
 
+# ------------------------- RATE LIMIT HELPERS -----------------
+def _is_rate_limit_error(exc: Exception) -> bool:
+    try:
+        return getattr(exc, "code", None) == -1003 or "-1003" in str(exc) or "Way too much request weight" in str(exc)
+    except Exception:
+        return False
+
+
+def _safe_rest_bootstrap() -> bool:
+    """Run the small startup REST set once. Never hammer Binance on -1003."""
+    delay = 15
+    while not WS_STOP.is_set():
+        try:
+            load_exchange_filters()
+            configure_account()
+            initialize_risk_windows()
+            recover_position_once()
+            seed_market_data()
+            return True
+        except BinanceAPIException as exc:
+            if _is_rate_limit_error(exc):
+                print(f"REST bootstrap rate-limited: {exc}")
+                send_telegram(
+                    "⚠️ *Binance REST bootstrap is rate-limited (-1003).*\n"
+                    f"Waiting {delay}s before a single retry. Market data remains WebSocket-based."
+                )
+                WS_STOP.wait(delay)
+                delay = min(300, delay * 2)
+                continue
+            print(f"REST bootstrap Binance error: {exc}")
+            WS_STOP.wait(30)
+        except Exception as exc:
+            print(f"REST bootstrap error: {exc}")
+            WS_STOP.wait(30)
+    return False
+
+
 # ------------------------- MAIN LOOP --------------------------
 def trading_loop() -> None:
-    print("🤖 Ultra A+ v5.1 WebSocket Rate-Limit-Safe engine active")
+    print("🤖 Ultra A+ v5.2 WebSocket Rate-Limit-Protected engine active")
     print(
         f"Testnet={TESTNET}, Symbol={SYMBOL}, MinScore={MIN_SCORE}, "
         f"Risk={RISK_PER_TRADE * 100:.2f}%, MaxDaily={MAX_DAILY_TRADES}, "
@@ -1526,17 +1568,16 @@ def trading_loop() -> None:
     )
 
     load_state()
-    load_exchange_filters()
-    configure_account()
-    initialize_risk_windows()
-    recover_position_once()
 
-    # Exactly one REST bootstrap for each timeframe.
-    seed_market_data()
+    # Small controlled REST bootstrap. If Binance is rate-limiting the Render IP,
+    # wait with exponential backoff rather than crashing/restarting and hammering it.
+    if not _safe_rest_bootstrap():
+        raise RuntimeError("REST bootstrap stopped")
+
     start_market_websockets()
 
     send_telegram(
-        f"🚀 *Ultra A+ v5.1 WebSocket Active*\n"
+        f"🚀 *Ultra A+ v5.2 WebSocket Active*\n"
         f"Mode: `{'TESTNET' if TESTNET else 'LIVE'}`\n"
         f"Pair: `{SYMBOL}`\n"
         f"Min Score: `{MIN_SCORE}`\n"
@@ -1611,7 +1652,7 @@ def trading_loop() -> None:
                 open_trade(setup)
             else:
                 if time.time() - last_status_print > 300:
-                    print("No A+ v5.1 setup. Staying flat.")
+                    print("No A+ v5.2 setup. Staying flat.")
                     last_status_print = time.time()
 
         except BinanceAPIException as exc:
@@ -1632,7 +1673,7 @@ def trading_loop() -> None:
 
 # ---------------------------- MAIN -----------------------------
 if __name__ == "__main__":
-    print("Market data architecture: REST bootstrap + WebSocket live kline streams")
+    print("Market data architecture: REST bootstrap + WebSocket live kline streams + rate-limit guard")
     threading.Thread(
         target=run_flask,
         daemon=True,
