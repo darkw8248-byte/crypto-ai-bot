@@ -12,6 +12,7 @@ import ta
 from flask import Flask
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
+import websocket
 
 # ============================================================
 # ULTRA A+ BTCUSDT FUTURES v5 MICRO-50
@@ -25,6 +26,8 @@ from binance.exceptions import BinanceAPIException
 # - TESTNET is the default.
 # - ONE-WAY position mode is required.
 # - Default risk is 1.0% of available USDT per trade.
+# - Market data uses Binance Futures WebSocket streams after one startup REST sync.
+# - REST kline polling is removed from the main loop to prevent API -1003 bans.
 # - A $30/month profit is a GOAL/ALERT only, not a forced-trading
 #   condition. The backtest does NOT support guaranteeing $30/month
 #   from a $50 account without taking extreme risk.
@@ -96,7 +99,11 @@ BREAKEVEN_TRIGGER_R = float(os.getenv("BREAKEVEN_TRIGGER_R", "1.25"))
 BREAKEVEN_BUFFER_ATR = float(os.getenv("BREAKEVEN_BUFFER_ATR", "0.05"))
 BREAKEVEN_CHECK_SECONDS = int(os.getenv("BREAKEVEN_CHECK_SECONDS", "300"))
 
-LOOP_SECONDS = int(os.getenv("LOOP_SECONDS", "60"))
+LOOP_SECONDS = int(os.getenv("LOOP_SECONDS", "10"))
+WS_RECONNECT_MIN_SECONDS = int(os.getenv("WS_RECONNECT_MIN_SECONDS", "2"))
+WS_RECONNECT_MAX_SECONDS = int(os.getenv("WS_RECONNECT_MAX_SECONDS", "60"))
+WS_TESTNET_URL = "wss://stream.binancefuture.com/ws"
+WS_LIVE_URL = "wss://fstream.binance.com/ws"
 
 CANDLES_15M = int(os.getenv("CANDLES_15M", "240"))
 CANDLES_1H = int(os.getenv("CANDLES_1H", "240"))
@@ -283,6 +290,120 @@ KLINE_COLUMNS = [
     "taker_quote_vol",
     "ignore",
 ]
+
+MARKET_DATA = {
+    "15m": None,
+    "1h": None,
+    "4h": None,
+}
+LATEST_PRICE = {"price": 0.0, "updated_at": 0.0}
+DATA_LOCK = threading.RLock()
+NEW_15M_CLOSED = threading.Event()
+WS_THREADS = []
+WS_STOP = threading.Event()
+
+def _normalize_ws_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy().sort_values("time").drop_duplicates("time", keep="last")
+    return df.reset_index(drop=True)
+
+def seed_market_data() -> None:
+    """One REST bootstrap per timeframe; afterwards websocket owns live updates."""
+    for interval, limit in ((TIMEFRAME, CANDLES_15M), (TREND_1H, CANDLES_1H), (TREND_4H, CANDLES_4H)):
+        raw = get_klines(interval, limit)
+        with DATA_LOCK:
+            MARKET_DATA[interval] = _normalize_ws_dataframe(raw)
+        print(f"Seeded {interval}: {len(raw)} candles")
+
+def _apply_kline_event(interval: str, k: dict) -> None:
+    if k.get("i") != interval:
+        return
+    row = {
+        "time": int(k["t"]),
+        "open": float(k["o"]),
+        "high": float(k["h"]),
+        "low": float(k["l"]),
+        "close": float(k["c"]),
+        "volume": float(k["v"]),
+        "close_time": int(k["T"]),
+        "qav": 0.0,
+        "num_trades": int(k.get("n", 0)),
+        "taker_base_vol": 0.0,
+        "taker_quote_vol": 0.0,
+        "ignore": 0,
+    }
+    with DATA_LOCK:
+        df = MARKET_DATA[interval]
+        if df is None or df.empty:
+            MARKET_DATA[interval] = pd.DataFrame([row], columns=KLINE_COLUMNS)
+        else:
+            idx = df.index[df["time"] == row["time"]]
+            if len(idx):
+                for col, value in row.items():
+                    df.loc[idx[-1], col] = value
+            else:
+                df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+                if len(df) > max(CANDLES_15M, CANDLES_1H, CANDLES_4H) + 20:
+                    df = df.iloc[-max(CANDLES_15M, CANDLES_1H, CANDLES_4H)-10:].reset_index(drop=True)
+                MARKET_DATA[interval] = df
+        LATEST_PRICE["price"] = row["close"]
+        LATEST_PRICE["updated_at"] = time.time()
+
+    if bool(k.get("x")) and interval == TIMEFRAME:
+        NEW_15M_CLOSED.set()
+
+def _ws_worker(interval: str) -> None:
+    stream = f"{SYMBOL.lower()}@kline_{interval}"
+    base = WS_TESTNET_URL if TESTNET else WS_LIVE_URL
+    url = f"{base}/{stream}"
+    delay = WS_RECONNECT_MIN_SECONDS
+
+    while not WS_STOP.is_set():
+        def on_message(ws, message):
+            try:
+                payload = json.loads(message)
+                data = payload.get("data", payload)
+                if data.get("e") == "kline":
+                    _apply_kline_event(interval, data["k"])
+            except Exception as exc:
+                print(f"WebSocket message error {interval}: {exc}")
+
+        def on_error(ws, error):
+            print(f"WebSocket error {interval}: {error}")
+
+        def on_close(ws, code, msg):
+            print(f"WebSocket closed {interval}: code={code} msg={msg}")
+
+        try:
+            print(f"Connecting WebSocket: {url}")
+            ws = websocket.WebSocketApp(
+                url,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+            delay = WS_RECONNECT_MIN_SECONDS
+        except Exception as exc:
+            print(f"WebSocket worker error {interval}: {exc}")
+        if WS_STOP.is_set():
+            break
+        print(f"Reconnecting {interval} WebSocket in {delay}s...")
+        WS_STOP.wait(delay)
+        delay = min(WS_RECONNECT_MAX_SECONDS, max(WS_RECONNECT_MIN_SECONDS, delay * 2))
+
+def start_market_websockets() -> None:
+    global WS_THREADS
+    for interval in (TIMEFRAME, TREND_1H, TREND_4H):
+        t = threading.Thread(target=_ws_worker, args=(interval,), daemon=True, name=f"ws-{interval}")
+        t.start()
+        WS_THREADS.append(t)
+
+def get_market_snapshot(interval: str) -> pd.DataFrame:
+    with DATA_LOCK:
+        df = MARKET_DATA.get(interval)
+        if df is None or len(df) < 5:
+            raise RuntimeError(f"Market data not ready for {interval}")
+        return df.copy()
 
 def get_klines(interval: str, limit: int) -> pd.DataFrame:
     klines = client.futures_klines(
@@ -1397,13 +1518,10 @@ def reconcile_position_and_result() -> None:
 
 # ------------------------- MAIN LOOP --------------------------
 def trading_loop() -> None:
-    print("🤖 Ultra A+ v5 Micro-50 engine active")
+    print("🤖 Ultra A+ v5.1 WebSocket Rate-Limit-Safe engine active")
     print(
-        f"Testnet={TESTNET}, "
-        f"Symbol={SYMBOL}, "
-        f"MinScore={MIN_SCORE}, "
-        f"Risk={RISK_PER_TRADE * 100:.2f}%, "
-        f"MaxDaily={MAX_DAILY_TRADES}, "
+        f"Testnet={TESTNET}, Symbol={SYMBOL}, MinScore={MIN_SCORE}, "
+        f"Risk={RISK_PER_TRADE * 100:.2f}%, MaxDaily={MAX_DAILY_TRADES}, "
         f"Leverage={LEVERAGE}x"
     )
 
@@ -1413,57 +1531,57 @@ def trading_loop() -> None:
     initialize_risk_windows()
     recover_position_once()
 
+    # Exactly one REST bootstrap for each timeframe.
+    seed_market_data()
+    start_market_websockets()
+
     send_telegram(
-        f"🚀 *Ultra A+ v5 Micro-50 Active*\n"
+        f"🚀 *Ultra A+ v5.1 WebSocket Active*\n"
         f"Mode: `{'TESTNET' if TESTNET else 'LIVE'}`\n"
         f"Pair: `{SYMBOL}`\n"
         f"Min Score: `{MIN_SCORE}`\n"
         f"Risk/Trade: `{RISK_PER_TRADE * 100:.2f}%`\n"
         f"Leverage: `{LEVERAGE}x`\n"
+        f"Market Data: `WEBSOCKET`\n"
         f"Daily Max Trades: `{MAX_DAILY_TRADES}`\n"
         f"Daily Max Loss: `{MAX_DAILY_LOSS_PCT * 100:.1f}%`\n"
-        f"Monthly Max Loss: `{MAX_MONTHLY_LOSS_PCT * 100:.1f}%`\n"
-        f"Monthly Goal Alert: `${MONTHLY_PROFIT_TARGET_USDT:.2f}`"
+        f"Monthly Max Loss: `{MAX_MONTHLY_LOSS_PCT * 100:.1f}%`"
     )
 
     last_closed_candle = None
     last_status_print = 0.0
+    last_reconcile = 0.0
 
     while True:
         try:
+            # WebSocket keeps latest candle/price live; this loop does NOT poll klines.
             initialize_risk_windows()
 
-            df15 = add_indicators(
-                get_klines(TIMEFRAME, CANDLES_15M)
-            )
+            df15_live = get_market_snapshot(TIMEFRAME)
+            current_price = float(LATEST_PRICE["price"] or df15_live["close"].iloc[-1])
 
+            df15_ind = add_indicators(df15_live)
+            latest_atr = float(df15_ind["atr"].iloc[-1]) if not pd.isna(df15_ind["atr"].iloc[-1]) else 0.0
+            maybe_move_to_breakeven(current_price, latest_atr)
+
+            # Only analyze once per NEW CLOSED 15m candle.
+            if not NEW_15M_CLOSED.wait(timeout=LOOP_SECONDS):
+                continue
+            NEW_15M_CLOSED.clear()
+
+            df15 = add_indicators(get_market_snapshot(TIMEFRAME))
             row = closed(df15)
             candle_id = int(row["time"])
 
-            current_price = float(df15["close"].iloc[-1])
-
-            current_atr = (
-                float(df15["atr"].iloc[-1])
-                if not pd.isna(df15["atr"].iloc[-1])
-                else 0.0
-            )
-
-            maybe_move_to_breakeven(
-                current_price,
-                current_atr,
-            )
-
             if candle_id == last_closed_candle:
-                time.sleep(LOOP_SECONDS)
                 continue
-
             last_closed_candle = candle_id
             STATE["last_signal_candle"] = candle_id
 
             reconcile_position_and_result()
+            last_reconcile = time.time()
 
             if STATE["position"] is not None:
-                time.sleep(LOOP_SECONDS)
                 continue
 
             if not can_trade():
@@ -1476,50 +1594,45 @@ def trading_loop() -> None:
                         f"cooldown={cooldown_ok()}"
                     )
                     last_status_print = time.time()
-
-                time.sleep(LOOP_SECONDS)
                 continue
 
-            df1h = add_indicators(
-                get_klines(TREND_1H, CANDLES_1H)
-            )
-            df4h = add_indicators(
-                get_klines(TREND_4H, CANDLES_4H)
-            )
+            # 1H/4H are maintained by websocket; no REST requests here.
+            df1h = add_indicators(get_market_snapshot(TREND_1H))
+            df4h = add_indicators(get_market_snapshot(TREND_4H))
 
-            side, setup = build_signal(
-                df15,
-                df1h,
-                df4h,
-            )
+            side, setup = build_signal(df15, df1h, df4h)
 
             if side and setup:
                 print(
-                    f"A+ v5 setup: {side} "
-                    f"score={setup['score']} "
-                    f"RR={setup['rr']:.2f} "
-                    f"RSI={setup['rsi']:.1f} "
+                    f"A+ v5.1 setup: {side} score={setup['score']} "
+                    f"RR={setup['rr']:.2f} RSI={setup['rsi']:.1f} "
                     f"Vol={setup['vol_ratio']:.2f}x"
                 )
-
                 open_trade(setup)
-
             else:
                 if time.time() - last_status_print > 300:
-                    print("No A+ v5 setup. Staying flat.")
+                    print("No A+ v5.1 setup. Staying flat.")
                     last_status_print = time.time()
 
-            time.sleep(LOOP_SECONDS)
-
+        except BinanceAPIException as exc:
+            # Do not hammer REST on -1003 or other transient API failures.
+            print(f"Binance API error: {exc}")
+            if getattr(exc, "code", None) == -1003:
+                send_telegram(
+                    "🚨 *Binance rate limit (-1003).*\n"
+                    "Market data is WebSocket-based. REST will not be retried aggressively."
+                )
+                time.sleep(60)
+            else:
+                time.sleep(15)
         except Exception as exc:
             print(f"Main loop error: {exc}")
-            send_telegram(
-                f"⚠️ *Main loop error:* `{exc}`"
-            )
-            time.sleep(240)
+            send_telegram(f"⚠️ *Main loop error:* `{exc}`")
+            time.sleep(15)
 
 # ---------------------------- MAIN -----------------------------
 if __name__ == "__main__":
+    print("Market data architecture: REST bootstrap + WebSocket live kline streams")
     threading.Thread(
         target=run_flask,
         daemon=True,
