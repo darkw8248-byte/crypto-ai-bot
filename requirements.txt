@@ -8,3 +8,4 @@ yfinance
 xgboost
 scikit-learn
 joblib
+websocket-client
